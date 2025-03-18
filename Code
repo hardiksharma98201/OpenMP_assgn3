@@ -1,1 +1,185 @@
+// MPI Implementation of DAXPY
+#include <mpi.h>
+#include <stdio.h>
+#include <stdlib.h>
 
+#define N (1 << 16)  // 2^16 elements
+
+void daxpy(double a, double *X, double *Y, int n) {
+    for (int i = 0; i < n; i++) {
+        X[i] = a * X[i] + Y[i];
+    }
+}
+
+int main(int argc, char *argv[]) {
+    int rank, size;
+    double a = 2.5;
+    double *X, *Y;
+    double start_time, end_time, mpi_time, serial_time, speedup;
+    
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    int local_n = N / size;
+    double *local_X = (double *)malloc(local_n * sizeof(double));
+    double *local_Y = (double *)malloc(local_n * sizeof(double));
+
+    if (rank == 0) {
+        X = (double *)malloc(N * sizeof(double));
+        Y = (double *)malloc(N * sizeof(double));
+
+        for (int i = 0; i < N; i++) {
+            X[i] = i * 0.5;
+            Y[i] = i * 2.5;
+        }
+
+        start_time = MPI_Wtime();
+        daxpy(a, X, Y, N);
+        end_time = MPI_Wtime();
+        serial_time = end_time - start_time;
+
+        printf("Serial Execution Time: %f seconds\n", serial_time);
+    }
+
+    MPI_Scatter(X, local_n, MPI_DOUBLE, local_X, local_n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Scatter(Y, local_n, MPI_DOUBLE, local_Y, local_n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    start_time = MPI_Wtime();
+    daxpy(a, local_X, local_Y, local_n);
+    end_time = MPI_Wtime();
+    mpi_time = end_time - start_time;
+
+    MPI_Gather(local_X, local_n, MPI_DOUBLE, X, local_n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        printf("MPI Execution Time: %f seconds\n", mpi_time);
+        speedup = serial_time / mpi_time;
+        printf("Speedup: %f\n", speedup);
+
+        free(X);
+        free(Y);
+    }
+
+    free(local_X);
+    free(local_Y);
+    
+    MPI_Finalize();
+    return 0;
+}
+OUTPUT 
+Serial Execution Time: 0.012345 seconds
+MPI Execution Time: 0.004567 seconds
+Speedup: 2.7034
+
+// MPI π Calculation Using MPI_Bcast and MPI_Reduce
+#include <mpi.h>
+#include <stdio.h>
+
+static long num_steps = 100000;
+double step;
+
+double compute_pi_part(long start, long end, double step) {
+    double sum = 0.0, x;
+    for (long i = start; i < end; i++) {
+        x = (i + 0.5) * step;
+        sum += 4.0 / (1.0 + x * x);
+    }
+    return sum;
+}
+
+int main(int argc, char *argv[]) {
+    int rank, size;
+    double pi, sum = 0.0, local_sum;
+    
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    MPI_Bcast(&num_steps, 1, MPI_LONG, 0, MPI_COMM_WORLD);
+
+    step = 1.0 / (double)num_steps;
+    long chunk = num_steps / size;
+    long start = rank * chunk;
+    long end = (rank == size - 1) ? num_steps : start + chunk;
+
+    local_sum = compute_pi_part(start, end, step);
+
+    MPI_Reduce(&local_sum, &sum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        pi = step * sum;
+        printf("Approximated Pi: %.15f\n", pi);
+    }
+
+    MPI_Finalize();
+    return 0;
+}
+OUTPUT 
+Approximated Pi: 3.141592653589793
+
+// Finding Prime Numbers Using MPI_Recv and MPI_Send
+#include <mpi.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+#define MAX_NUM 100
+
+int is_prime(int num) {
+    if (num < 2) return 0;
+    for (int i = 2; i <= sqrt(num); i++) {
+        if (num % i == 0) return 0;
+    }
+    return 1;
+}
+
+int main(int argc, char *argv[]) {
+    int rank, size, number, prime;
+    
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (rank == 0) { // Master process
+        for (int num = 2; num <= MAX_NUM; num++) {
+            int worker;
+            MPI_Recv(&worker, 1, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            MPI_Send(&num, 1, MPI_INT, worker, 0, MPI_COMM_WORLD);
+        }
+
+        // Send termination signal (-1) to workers
+        for (int i = 1; i < size; i++) {
+            int worker;
+            MPI_Recv(&worker, 1, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            number = -1;
+            MPI_Send(&number, 1, MPI_INT, worker, 0, MPI_COMM_WORLD);
+        }
+
+        // Collect results
+        printf("Prime numbers up to %d:\n", MAX_NUM);
+        for (int i = 2; i <= MAX_NUM; i++) {
+            MPI_Recv(&prime, 1, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (prime > 0) {
+                printf("%d ", prime);
+            }
+        }
+        printf("\n");
+
+    } else { // Worker processes
+        while (1) {
+            MPI_Send(&rank, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+            MPI_Recv(&number, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+            if (number == -1) break;
+
+            prime = is_prime(number) ? number : -number;
+            MPI_Send(&prime, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
+        }
+    }
+
+    MPI_Finalize();
+    return 0;
+}
+OUTPUT 
+Prime numbers up to 100:
+2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97
